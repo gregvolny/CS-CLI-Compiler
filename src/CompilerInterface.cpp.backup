@@ -1,0 +1,462 @@
+/*
+ * CompilerInterface.cpp - CSPro Compiler Wrapper using CSBatch.exe
+ * 
+ * This implementation wraps the CSBatch.exe utility from CSPro installation
+ * to provide command-line compilation capability.
+ * 
+ * CSBatch.exe is the official CSPro batch compiler that can compile:
+ * - Data Entry Applications (.ent files)
+ * - Batch Applications (.bch files)
+ * - Via Program Information Files (.pff files)
+ */
+
+#include "../include/CompilerInterface.h"
+#include <chrono>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
+#include <codecvt>
+#include <locale>
+#include <array>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <tchar.h>
+#endif
+
+// CSPro includes - These should be in your CSPro SDK/source
+// Uncomment and adjust paths when building with CSPro libraries
+/*
+#include <ZBRIDGEO/PifFile.h>
+#include <zBatchO/Runaplb.h>
+#include <engine/BATIFAZ.h>
+#include <Wcompile/wcompile.h>
+#include <zLogicO/ParserMessage.h>
+#include <zEngineO/ApplicationBuilder.h>
+#include <zEngineO/FileApplicationLoader.h>
+#include <zEngineO/ApplicationLoader.h>
+#include <zMessageO/SystemMessages.h>
+#include <zMessageO/MessageFile.h>
+#include <zMessageO/Messages.h>
+#include <zAppO/Application.h>
+#include <zToolsO/PortableFunctions.h>
+*/
+
+namespace CSProCompiler {
+
+// Real CSPro Engine Implementation
+class CSProEngineImpl : public ICompilerEngine {
+private:
+    bool m_initialized;
+    std::string m_csproPath;
+    // Pointers to CSPro objects (uncomment when linking)
+    // std::unique_ptr<CNPifFile> m_pifFile;
+    // std::unique_ptr<CRunAplBatch> m_batchRunner;
+
+public:
+    CSProEngineImpl() : m_initialized(false) {
+        // Try to find CSPro installation
+        const char* csproEnv = std::getenv("CSPRO_PATH");
+        if (csproEnv) {
+            m_csproPath = csproEnv;
+        }
+    }
+
+    bool initialize() override {
+        if (m_initialized) return true;
+
+        try {
+            // Initialize CSPro environment
+            // This would set up paths, configurations, etc.
+            
+            if (!m_csproPath.empty()) {
+                std::cout << "Using CSPro from: " << m_csproPath << std::endl;
+            }
+
+            #ifdef CSPRO_REAL_COMPILATION
+            // CRITICAL: Load CSPro message files (CSProDesigner.mgf)
+            // This is required for compiler error messages to be displayed correctly
+            // Source: cspro/zMessageO/SystemMessages.cpp
+            //
+            // SystemMessages::LoadMessages() will load:
+            // 1. CSProDesigner.mgf - Contains compile-time error messages
+            // 2. CSProRuntime.en.mgf - Contains runtime messages
+            //
+            // These files MUST exist in the CSPro installation directory
+            // Location: %CSPRO_PATH%\CSProDesigner.mgf
+            //
+            // Without these files, error messages will show as "Invalid message number"
+            std::wstring application_filename = L""; // Empty for command-line tool
+            std::vector<std::shared_ptr<TextSource>> message_text_sources; // Empty - use defaults
+            bool load_designer_messages = true; // MUST be true for compilation errors
+            
+            SystemMessages::LoadMessages(application_filename, message_text_sources, load_designer_messages);
+            #endif
+
+            m_initialized = true;
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Failed to initialize CSPro engine: " << e.what() << std::endl;
+            std::cerr << "Make sure CSProDesigner.mgf is in the CSPro installation directory" << std::endl;
+            return false;
+        }
+    }
+
+    CompilationResult compile(const CompilerOptions& options) override {
+        CompilationResult result;
+        
+        if (!m_initialized) {
+            std::cerr << "Error: Compiler not initialized!" << std::endl;
+            return result;
+        }
+
+        auto startTime = std::chrono::high_resolution_clock::now();
+
+        try {
+            // Check if file exists
+            if (!std::filesystem::exists(options.inputFile)) {
+                DiagnosticMessage msg;
+                msg.file = options.inputFile;
+                msg.line = 0;
+                msg.column = 0;
+                msg.message = "File not found: " + options.inputFile;
+                msg.severity = DiagnosticMessage::Severity::Error;
+                result.diagnostics.push_back(msg);
+                result.errorCount = 1;
+                result.success = false;
+                return result;
+            }
+
+            if (options.verboseOutput) {
+                std::cout << "Compiling: " << options.inputFile << std::endl;
+            }
+
+            // Real compilation using CSPro engine
+            bool compileSuccess = compileWithCSProEngine(options, result);
+            
+            auto endTime = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+            result.compilationTimeMs = duration.count();
+
+            result.success = compileSuccess && (result.errorCount == 0);
+            
+            if (options.verboseOutput) {
+                std::cout << "Compilation " << (result.success ? "successful" : "failed") 
+                         << " in " << result.compilationTimeMs << "ms" << std::endl;
+            }
+        }
+        catch (const std::exception& e) {
+            DiagnosticMessage diag;
+            diag.file = options.inputFile;
+            diag.line = 0;
+            diag.column = 0;
+            diag.message = std::string("Compilation exception: ") + e.what();
+            diag.severity = DiagnosticMessage::Severity::Error;
+            result.diagnostics.push_back(diag);
+            result.errorCount++;
+            result.success = false;
+        }
+
+        return result;
+    }
+
+    void shutdown() override {
+        if (m_initialized) {
+            // Clean up CSPro resources
+            // m_batchRunner.reset();
+            // m_pifFile.reset();
+            m_initialized = false;
+        }
+    }
+
+private:
+    bool compileWithCSProEngine(const CompilerOptions& options, CompilationResult& result) {
+        /*
+         * REAL CSPRO COMPILATION IMPLEMENTATION
+         * 
+         * Based on: BatchExecutor::Run() and CRunAplBatch::LoadCompile()
+         * Source: csprousers/cspro/tree/dev/cspro/zBatchF/BatchExecutor.cpp
+         *         csprousers/cspro/tree/dev/cspro/zBatchO/Runaplb.cpp
+         */
+        
+        std::string ext = std::filesystem::path(options.inputFile).extension().string();
+        
+        #ifdef CSPRO_REAL_COMPILATION
+        
+        try {
+            // Step 1: Load the PFF or application file
+            m_pifFile = std::make_unique<CNPifFile>();
+            
+            if (ext == ".pff") {
+                // Load PFF file
+                m_pifFile->SetPifFileName(options.inputFile.c_str());
+                if (!m_pifFile->LoadPifFile()) {
+                    DiagnosticMessage diag;
+                    diag.file = options.inputFile;
+                    diag.line = 0;
+                    diag.column = 0;
+                    diag.message = "Failed to load PFF file";
+                    diag.severity = DiagnosticMessage::Severity::Error;
+                    result.diagnostics.push_back(diag);
+                    result.errorCount++;
+                    return false;
+                }
+            } else {
+                // Load .ent or .bch file directly
+                m_pifFile->SetAppFName(options.inputFile.c_str());
+            }
+
+            if (options.verboseOutput) {
+                std::cout << "Phase 1: Loading application..." << std::endl;
+            }
+
+            // Step 2: Create batch application runner
+            // Based on: BatchExecutor::Run() - line 111-135
+            m_batchRunner = std::make_unique<CRunAplBatch>(m_pifFile.get());
+
+            if (options.verboseOutput) {
+                std::cout << "Phase 2: Initializing compiler..." << std::endl;
+            }
+
+            // Step 3: Compile the application
+            // Based on: CRunAplBatch::LoadCompile() - line 42-58
+            bool compileSuccess = m_batchRunner->LoadCompile();
+
+            if (options.verboseOutput) {
+                std::cout << "Phase 3: Compiling application..." << std::endl;
+            }
+
+            // Step 4: Extract compilation errors/warnings
+            // Based on: CEngineCompFunc parser messages
+            // 
+            // IMPORTANT: Error messages come from CSProDesigner.mgf
+            // =======================================================
+            // Each Logic::ParserMessage contains:
+            // - message_number: Identifier for the error type
+            // - message_text: Actual error message (retrieved from CSProDesigner.mgf)
+            // 
+            // The message text is obtained via:
+            // MGF::GetMessageText(message_number) -> reads from CSProDesigner.mgf
+            // 
+            // If CSProDesigner.mgf is missing or corrupted, you will get
+            // "Invalid message number" errors instead of meaningful messages.
+            //
+            // Source references:
+            // - cspro/zMessageO/Messages.cpp (MGF::GetMessageText)
+            // - cspro/zMessageO/MessageFile.cpp (MessageFile::Load)
+            // - cspro/engine/Comp.cpp (CEngineCompFunc::FormatMessageAndProcessParserMessage)
+            const CEngineArea* engineArea = m_batchRunner->GetEngineArea();
+            if (engineArea) {
+                CEngineCompFunc* compiler = engineArea->m_pEngineCompFunc;
+                if (compiler) {
+                    // Get parser messages from compiler
+                    // Based on: Logic::ParserMessage handling
+                    const auto& parserMessages = compiler->GetParserMessages();
+                    
+                    for (const auto& msg : parserMessages) {
+                        DiagnosticMessage diag;
+                        
+                        // Convert wide string to regular string
+                        std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+                        diag.file = converter.to_bytes(msg.GetFilename());
+                        diag.line = msg.GetLineNumber();
+                        diag.column = msg.GetColumnNumber();
+                        
+                        // The message text is already retrieved from CSProDesigner.mgf
+                        // by the time it reaches ParserMessage
+                        diag.message = converter.to_bytes(msg.GetMessage());
+                        
+                        // Map CSPro message types to our severity
+                        switch (msg.GetType()) {
+                            case Logic::ParserMessage::Type::Error:
+                                diag.severity = DiagnosticMessage::Severity::Error;
+                                result.errorCount++;
+                                break;
+                            case Logic::ParserMessage::Type::Warning:
+                                diag.severity = DiagnosticMessage::Severity::Warning;
+                                result.warningCount++;
+                                break;
+                            default:
+                                diag.severity = DiagnosticMessage::Severity::Info;
+                                break;
+                        }
+                        
+                        result.diagnostics.push_back(diag);
+                    }
+                }
+            }
+
+            return compileSuccess;
+            
+        } catch (const std::exception& e) {
+            DiagnosticMessage diag;
+            diag.file = options.inputFile;
+            diag.line = 0;
+            diag.column = 0;
+            diag.message = std::string("CSPro engine error: ") + e.what();
+            diag.severity = DiagnosticMessage::Severity::Error;
+            result.diagnostics.push_back(diag);
+            result.errorCount++;
+            return false;
+        }
+        
+        #else
+        
+        // Fallback when CSPro libraries are not available
+        // This provides a way to test the tool structure
+        std::cerr << "ERROR: CSProCompile was built without real CSPro library support." << std::endl;
+        std::cerr << "To enable real compilation:" << std::endl;
+        std::cerr << "1. Install CSPro SDK or build CSPro from source" << std::endl;
+        std::cerr << "2. Set CSPRO_SDK_PATH environment variable" << std::endl;
+        std::cerr << "3. Rebuild with: cmake -DCSPRO_SDK_AVAILABLE=ON" << std::endl;
+        
+        DiagnosticMessage diag;
+        diag.file = options.inputFile;
+        diag.line = 0;
+        diag.column = 0;
+        diag.message = "Real CSPro compilation not available. Build with CSPRO_SDK_AVAILABLE=ON.";
+        diag.severity = DiagnosticMessage::Severity::Error;
+        result.diagnostics.push_back(diag);
+        result.errorCount++;
+        
+        return false;
+        
+        #endif
+    }
+};
+
+// Factory function
+std::unique_ptr<ICompilerEngine> createCompilerEngine() {
+    return std::make_unique<CSProEngineImpl>();
+}
+
+/*
+ * REAL CSPRO INTEGRATION IMPLEMENTATION
+ * 
+ * Uncomment and adapt this code when linking to actual CSPro libraries:
+ *
+ * #ifdef CSPRO_SDK_AVAILABLE
+ * 
+ * #include <ZBRIDGEO/PifFile.h>
+ * #include <zBatchO/RunaplB.h>
+ * #include <engine/BATIFAZ.h>
+ * #include <Wcompile/wcompile.h>
+ * #include <zLogicO/ParserMessage.h>
+ * 
+ * class CSProEngineImpl : public ICompilerEngine {
+ * private:
+ *     std::unique_ptr<CNPifFile> m_pifFile;
+ *     std::unique_ptr<CRunAplBatch> m_batchRunner;
+ *     bool m_initialized;
+ * 
+ * public:
+ *     CSProEngineImpl() : m_initialized(false) {}
+ * 
+ *     bool initialize() override {
+ *         // Initialize CSPro environment
+ *         // Set up paths, load configuration, etc.
+ *         m_initialized = true;
+ *         return true;
+ *     }
+ * 
+ *     CompilationResult compile(const CompilerOptions& options) override {
+ *         CompilationResult result;
+ *         
+ *         try {
+ *             // 1. Load the PFF or application file
+ *             m_pifFile = std::make_unique<CNPifFile>();
+ *             
+ *             if (options.inputFile.ends_with(".pff")) {
+ *                 m_pifFile->SetPifFileName(options.inputFile.c_str());
+ *                 if (!m_pifFile->LoadPifFile()) {
+ *                     result.success = false;
+ *                     // Add error diagnostic
+ *                     return result;
+ *                 }
+ *             } else {
+ *                 // Load .ent or .bch file
+ *                 m_pifFile->SetAppFName(options.inputFile.c_str());
+ *             }
+ * 
+ *             // 2. Create batch runner and compile
+ *             m_batchRunner = std::make_unique<CRunAplBatch>(m_pifFile.get());
+ *             
+ *             auto startTime = std::chrono::high_resolution_clock::now();
+ *             
+ *             bool compileSuccess = m_batchRunner->LoadCompile();
+ *             
+ *             auto endTime = std::chrono::high_resolution_clock::now();
+ *             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+ *             result.compilationTimeMs = duration.count();
+ * 
+ *             // 3. Extract compilation errors/warnings
+ *             const CEngineArea* engineArea = m_batchRunner->GetEngineArea();
+ *             if (engineArea) {
+ *                 CEngineCompFunc* compiler = engineArea->GetEngineCompFunc();
+ *                 if (compiler) {
+ *                     // Get parser messages
+ *                     const auto& parserMessages = compiler->GetParserMessages();
+ *                     
+ *                     for (const auto& msg : parserMessages) {
+ *                         DiagnosticMessage diag;
+ *                         diag.file = WS2CS(msg.GetFilename());
+ *                         diag.line = msg.GetLineNumber();
+ *                         diag.column = msg.GetColumnNumber();
+ *                         diag.message = WS2CS(msg.GetMessage());
+ *                         
+ *                         switch (msg.GetType()) {
+ *                             case Logic::ParserMessage::Type::Error:
+ *                                 diag.severity = DiagnosticMessage::Severity::Error;
+ *                                 result.errorCount++;
+ *                                 break;
+ *                             case Logic::ParserMessage::Type::Warning:
+ *                                 diag.severity = DiagnosticMessage::Severity::Warning;
+ *                                 result.warningCount++;
+ *                                 break;
+ *                             default:
+ *                                 diag.severity = DiagnosticMessage::Severity::Info;
+ *                                 break;
+ *                         }
+ *                         
+ *                         result.diagnostics.push_back(diag);
+ *                     }
+ *                 }
+ *             }
+ * 
+ *             result.success = compileSuccess && (result.errorCount == 0);
+ *             
+ *         } catch (const std::exception& e) {
+ *             DiagnosticMessage diag;
+ *             diag.file = options.inputFile;
+ *             diag.line = 0;
+ *             diag.column = 0;
+ *             diag.message = std::string("Compilation exception: ") + e.what();
+ *             diag.severity = DiagnosticMessage::Severity::Error;
+ *             result.diagnostics.push_back(diag);
+ *             result.errorCount++;
+ *             result.success = false;
+ *         }
+ * 
+ *         return result;
+ *     }
+ * 
+ *     void shutdown() override {
+ *         if (m_batchRunner) {
+ *             m_batchRunner->End(false);
+ *             m_batchRunner.reset();
+ *         }
+ *         m_pifFile.reset();
+ *         m_initialized = false;
+ *     }
+ * };
+ * 
+ * std::unique_ptr<ICompilerEngine> createCompilerEngine() {
+ *     return std::make_unique<CSProEngineImpl>();
+ * }
+ * 
+ * #endif // CSPRO_SDK_AVAILABLE
+ */
+
+} // namespace CSProCompiler
