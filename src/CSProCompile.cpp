@@ -10,8 +10,8 @@
  * - Provides JSON output for editor integration
  * 
  * Usage:
- *   CSProCompile <application.ent|.bch> [options]
- *   CSProCompile <application.pff> [options]
+ *   CSProCompile <application.ent|.bch> [options] /* Has been changed to use entry compilation instead of Batch */
+ *   CSProCompile <application.ent> [options]
  * 
  * Options:
  *   -o <file>     Output compilation results to JSON file
